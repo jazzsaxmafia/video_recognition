@@ -4,10 +4,21 @@ import theano.tensor as T
 
 import ipdb
 import os
-from taeksoo.cnn_util import *
+from cnn_util import *
 
 from keras import initializations
 from keras.utils.theano_utils import shared_zeros
+
+import pandas as pd
+import numpy as np
+
+def sgd( cost, params, lr ):
+    grads = T.grad(cost, params)
+    updates = []
+    for param, grad in zip(params, grads):
+        updates.append((param, param - lr*grad))
+
+    return updates
 
 class LSTM():
     def __init__(self, dim_input, dim, dim_output):
@@ -30,7 +41,7 @@ class LSTM():
             return _x[:, n*dim:(n+1)*dim]
 
         def _step(m_tm_1, x_t, h_tm_1, c_tm_1):
-            lstm_preactive = T.dot(h_tm_1, self.lstm_U) + T.dot(x_t, self.lstm_W) + self.b
+            lstm_preactive = T.dot(h_tm_1, self.lstm_U) + T.dot(x_t, self.lstm_W) + self.lstm_b
 
             i = T.nnet.sigmoid(_slice(lstm_preactive, 0, self.dim))
             f = T.nnet.sigmoid(_slice(lstm_preactive, 1, self.dim))
@@ -45,8 +56,8 @@ class LSTM():
 
             return [h,c]
 
-        h0 = T.alloc(0., x.shape[0], self.dim)
-        c0 = T.alloc(0., x.shape[0], self.dim)
+        h0 = T.alloc(0., x.shape[1], self.dim) # (n_samples, dim)
+        c0 = T.alloc(0., x.shape[1], self.dim)
 
         rval, updates = theano.scan(
                 fn=_step,
@@ -73,11 +84,79 @@ class LSTM():
         cost = T.nnet.categorical_crossentropy(probs, label)
         cost = T.mean(cost)
 
+        updates = sgd(cost=cost, params=self.params, lr=0.001)
+
         f_train = theano.function(
                 inputs=[x,mask,label],
                 outputs=cost,
+                updates=updates,
                 allow_input_downcast=True)
 
         return f_train
 
+def read_video(vid, interval, cnn):
+    cap = cv2.VideoCapture(vid)
 
+    frame_count = 0
+    frame_list = []
+    while True:
+        ret, frame = cap.read()
+        if ret is False:
+            break
+
+        if np.mod(frame_count , interval) == 0:
+            frame_list.append(frame)
+
+        frame_count += 1
+
+    frame_array = np.array(frame_list)
+    return cnn.get_features(frame_array)
+
+
+def main():
+
+    video_path = '../data/UCF_video'
+    videos = os.listdir(video_path)
+
+    labels = np.unique(map(lambda x: x.split('_')[1], videos))
+    label_dict = pd.Series(range(len(labels)), index=labels)
+
+    interval = 10
+    batch_size = 10
+    dim_input=4096
+    dim_output=len(labels)
+    dim = 256
+
+    cnn = CNN()
+    lstm = LSTM(dim_input=dim_input, dim=dim, dim_output=dim_output)
+
+    f_train = lstm.build_model()
+
+
+    for start, end in zip(
+            range(0, len(videos)+batch_size, batch_size),
+            range(batch_size, len(videos)+batch_size, batch_size)
+        ):
+
+        batch_files = videos[start:end]
+
+        batch_labels = np.array(map(lambda x: x.split('_')[1], batch_files))
+        batch_labels = label_dict[batch_labels].values
+
+        batch_videos = map(lambda x: os.path.join(video_path, x), batch_files)
+
+        batch_frames = map(lambda vid: read_video(vid, interval, cnn), batch_videos)
+        batch_lens = map(lambda frm: frm.shape[0], batch_frames)
+        maxlen = np.max(batch_lens)
+
+        frame_tensor = np.zeros((len(batch_videos), maxlen, 4096))
+        mask_matrix = np.zeros((len(batch_videos), maxlen))
+        label_matrix = np.zeros((len(batch_videos), dim_output))
+
+        for idx,frame in enumerate(batch_frames):
+            frame_tensor[idx][:len(frame)] = frame
+            mask_matrix[idx][:len(frame)] = 1
+            label_matrix[idx][batch_labels[idx]] = 1
+
+        cost = f_train(frame_tensor, mask_matrix, label_matrix)
+        print cost
