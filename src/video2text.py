@@ -94,7 +94,7 @@ class LSTM():
 
         return f_train
 
-def read_video(vid, interval, cnn):
+def read_video(vid, interval):
     cap = cv2.VideoCapture(vid)
 
     frame_count = 0
@@ -110,53 +110,79 @@ def read_video(vid, interval, cnn):
         frame_count += 1
 
     frame_array = np.array(frame_list)
-    return cnn.get_features(frame_array)
+    return frame_array
 
+def make_dataset(video_path):
+    videos = os.listdir(video_path)
+
+    videos = map(lambda x: os.path.join(video_path, x), videos)
+    labels = np.unique(map(lambda x: x.split('/')[-1].split('_')[1], videos))
+    label_dict = pd.Series(range(len(labels)), index=labels)
+
+    all_labels = map(lambda x: x.split('/')[-1].split('_')[1], videos)
+    all_label_class = label_dict[np.array(all_labels)]
+
+    dataset = pd.DataFrame({'video':videos, 'label':all_label_class.values})
+    train_size = int(dataset.shape[0]*0.8)
+
+    train = dataset[:train_size]
+    test = dataset[train_size:]
+
+    train.to_pickle('../data/train_set.pickle')
+    test.to_pickle('../data/test_set.pickle')
+    label_dict.to_pickle('../data/label_dict.pickle')
+
+    ipdb.set_trace()
+
+    return train, test, label_dict
 
 def main():
 
     video_path = '../data/UCF_video'
-    videos = os.listdir(video_path)
 
-    labels = np.unique(map(lambda x: x.split('_')[1], videos))
-    label_dict = pd.Series(range(len(labels)), index=labels)
+    if not os.path.exists('../data/train_set.pickle'):
+        train_set, test_set, label_dict = make_dataset(video_path)
+    else:
+        train_set = pd.read_pickle('../data/train_set.pickle')
+        test_set = pd.read_pickle('../data/test_set.pickle')
+        label_dict = pd.read_pickle('../data/label_dict.pickle')
 
     interval = 10
     batch_size = 10
     dim_input=4096
-    dim_output=len(labels)
-    dim = 256
+    dim=256
+    n_epochs = 100
+    dim_output=len(label_dict)
 
     cnn = CNN()
     lstm = LSTM(dim_input=dim_input, dim=dim, dim_output=dim_output)
 
     f_train = lstm.build_model()
 
+    for epoch in range(n_epochs):
+        for start, end in zip(
+                range(0, len(train_set)+batch_size, batch_size),
+                range(batch_size, len(train_set)+batch_size, batch_size)
+            ):
 
-    for start, end in zip(
-            range(0, len(videos)+batch_size, batch_size),
-            range(batch_size, len(videos)+batch_size, batch_size)
-        ):
+            batch_data = train_set[start:end]
 
-        batch_files = videos[start:end]
+            batch_files = batch_data['video'].values
+            batch_labels = batch_data['label'].values
 
-        batch_labels = np.array(map(lambda x: x.split('_')[1], batch_files))
-        batch_labels = label_dict[batch_labels].values
+            batch_frames = map(lambda vid: read_video(vid, interval), batch_files)
+            batch_features = map(lambda vid: cnn.get_features(vid), batch_frames)
+            batch_lens = map(lambda feat: feat.shape[0], batch_features)
+            maxlen = np.max(batch_lens)
 
-        batch_videos = map(lambda x: os.path.join(video_path, x), batch_files)
+            frame_tensor = np.zeros((len(batch_files), maxlen, 4096))
+            mask_matrix = np.zeros((len(batch_files), maxlen))
+            label_matrix = np.zeros((len(batch_files), dim_output))
 
-        batch_frames = map(lambda vid: read_video(vid, interval, cnn), batch_videos)
-        batch_lens = map(lambda frm: frm.shape[0], batch_frames)
-        maxlen = np.max(batch_lens)
+            for idx,frame in enumerate(batch_features):
+                frame_tensor[idx][:len(frame)] = frame
+                mask_matrix[idx][:len(frame)] = 1
+                label_matrix[idx][batch_labels[idx]] = 1
 
-        frame_tensor = np.zeros((len(batch_videos), maxlen, 4096))
-        mask_matrix = np.zeros((len(batch_videos), maxlen))
-        label_matrix = np.zeros((len(batch_videos), dim_output))
-
-        for idx,frame in enumerate(batch_frames):
-            frame_tensor[idx][:len(frame)] = frame
-            mask_matrix[idx][:len(frame)] = 1
-            label_matrix[idx][batch_labels[idx]] = 1
-
-        cost = f_train(frame_tensor, mask_matrix, label_matrix)
-        print cost
+            cost = f_train(frame_tensor, mask_matrix, label_matrix)
+            print cost
