@@ -6,9 +6,8 @@ import ipdb
 import os
 
 import cv2
-from cnn_util import *
 
-def crop_optic_flow(image, target_height=256, target_width=256):
+def crop_optic_flow(image, target_height=227, target_width=227):
 
     height, width = image.shape
     if width == height:
@@ -46,8 +45,8 @@ def read_video(vid_file, interval):
 
         if np.mod(count, interval) == 0:
             flow = cv2.calcOpticalFlowFarneback(prev, next, 0.5, 3, 15, 3, 5, 1.2, 0)
-            dx = flow[...,0]
-            dy = flow[...,1]
+            dx = crop_optic_flow(flow[...,0])
+            dy = crop_optic_flow(flow[...,1])
 
             dx_list.append(dx)
             dy_list.append(dy)
@@ -55,10 +54,14 @@ def read_video(vid_file, interval):
         count += 1
         prev = next
 
-    dx_mean = np.mean(dx_list, axis=0)
-    dy_mean = np.mean(dy_list, axis=0)
+    dx_list = np.array(dx_list)[None,...]
+    dy_list = np.array(dy_list)[None,...]
 
-    return crop_optic_flow(dx_mean), crop_optic_flow(dy_mean)
+    return np.vstack([dx_list, dy_list]).swapaxes(1,0)
+#    dx_mean = np.mean(dx_list, axis=0)
+#    dy_mean = np.mean(dy_list, axis=0)
+
+#    return crop_optic_flow(dx_mean), crop_optic_flow(dy_mean)
 
 def make_optic_file(vid_file, data_path, save_path, interval):
     if os.path.exists(os.path.join(save_path, vid_file + '.dx.jpg')):
@@ -70,9 +73,9 @@ def make_optic_file(vid_file, data_path, save_path, interval):
     cv2.imwrite(os.path.join(save_path, vid_file + '.dx.jpg'), dx)
     cv2.imwrite(os.path.join(save_path, vid_file + '.dy.jpg'), dy)
 
-interval = 10
-data_path = '../data/UCF_video'
-save_path = '../data/UCF_optic'
-video_list = os.listdir(data_path)
-
-map(lambda vid_file: make_optic_file(vid_file, data_path, save_path, interval), video_list)
+#interval = 10
+#data_path = '../data/UCF_video'
+#save_path = '../data/UCF_optic'
+#video_list = os.listdir(data_path)
+#
+#map(lambda vid_file: make_optic_file(vid_file, data_path, save_path, interval), video_list)

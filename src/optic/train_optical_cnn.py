@@ -21,8 +21,9 @@ from theano.tensor.signal.downsample import max_pool_2d
 from theano.tensor.nnet import conv2d
 import sys
 sys.path.append('../util')
-from video_util import read_video
+from make_optical_dataset import *
 from train_util import sgd
+from cnn_util import crop_image
 
 srng = RandomStreams()
 
@@ -51,13 +52,19 @@ class Optic_CNN():
         self.conv5_W = initializations.uniform((256, 384, 3, 3))
         self.conv5_b = shared_zeros((256,))
 
-        self.fc6_W = initializations.uniform((9216, 4096))
-        self.fc6_b = shared_zeros((4096,))
+        self.fc6_W = initializations.uniform((1024, 1024))
+        self.fc6_b = shared_zeros((1024,))
 
-        self.fc7_W = initializations.uniform((4096, 4096))
-        self.fc7_b = shared_zeros((4096,))
+        self.fc7_W = initializations.uniform((1024, 1024))
+        self.fc7_b = shared_zeros((1024,))
+#        self.fc6_W = initializations.uniform((9216, 4096))
+#        self.fc6_b = shared_zeros((4096,))
+#
+#        self.fc7_W = initializations.uniform((4096, 4096))
+#        self.fc7_b = shared_zeros((4096,))
 
-        self.lstm_W = initializations.uniform((4096, lstm_dim*4))
+        #self.lstm_W = initializations.uniform((4096, lstm_dim*4))
+        self.lstm_W = initializations.uniform((1024, lstm_dim*4))
         self.lstm_U = initializations.uniform((lstm_dim, lstm_dim*4))
         self.lstm_b = shared_zeros((lstm_dim*4,))
 
@@ -78,22 +85,31 @@ class Optic_CNN():
 
     def get_convpool(self, img, kerns, conv_b, subsample, border_mode, pooling, ws=None, stride=None, normalizing=False):
 
-        conv_out = dnn.dnn_conv(
-                img=img,
-                kerns=kerns,
-                subsample=subsample,
-                border_mode=border_mode
-                )
+#        conv_out = dnn.dnn_conv(
+#                img=img,
+#                kerns=kerns,
+#                subsample=subsample,
+#                border_mode=border_mode
+#                )
+
+        conv_out = T.nnet.conv2d(
+                input=img,
+                filters=kerns,
+                subsample=subsample)
 
         conv_out += conv_b.dimshuffle('x',0,'x','x')
         conv_out = T.maximum(conv_out, 0)
 
         if pooling:
-            pool_out = dnn.dnn_pool(
-                    conv_out,
-                    ws=ws,
-                    stride=stride
-                    )
+            pool_out = max_pool_2d(
+                    input=conv_out,
+                    ds=ws,
+                    st=stride)
+#            pool_out = dnn.dnn_pool(
+#                    conv_out,
+#                    ws=ws,
+#                    stride=stride
+#                    )
         else:
             pool_out = conv_out
 
@@ -220,15 +236,17 @@ class Optic_CNN():
         tensor5 = T.TensorType('float32', (False,)*5) # ( batch, time, channel, width, height )
         image_sequences = tensor5('image_sequences')
         labels = T.imatrix('labels')
-
         masks = T.matrix('masks') # (batch, time)
+
+        image_sequences_shuffle = image_sequences.dimshuffle(1,0,2,3,4)
+        masks_shuffle = masks.dimshuffle(1,0)
 
         fc7s, updates = theano.scan(
                 fn=lambda imgs: self.get_visual(imgs),
-                sequences=[image_sequences]
+                sequences=[image_sequences_shuffle]
                 ) # ( batch, time, 4096 )
 
-        h_list = self.forward_lstm(fc7s, masks)
+        h_list = self.forward_lstm(fc7s, masks_shuffle)
         h_last = h_list[-1]
 
         output = T.dot(h_last, self.output_W) + self.output_b
@@ -250,7 +268,7 @@ class Optic_CNN():
 video_path = '../../data/UCF_video'
 all_videos = os.listdir(video_path)
 all_video_path = map(lambda x: os.path.join(video_path, x), all_videos)
-all_labels = map(lambda x: x.split('.')[0].split('v_')[1], all_videos)
+all_labels = map(lambda x: x.split('.')[0].split('_')[1], all_videos)
 
 unique_labels = np.unique(all_labels)
 label_dict = pd.Series(range(len(unique_labels)), index=unique_labels)
@@ -258,6 +276,7 @@ label_dict = pd.Series(range(len(unique_labels)), index=unique_labels)
 interval = 10
 n_epochs = 10
 batch_size = 10
+dim_output = 101
 
 optic_cnn = Optic_CNN()
 f_train = optic_cnn.build_model()
@@ -276,8 +295,18 @@ for epoch in range(n_epochs):
         batch_lens = map(lambda frms: len(frms), batch_frames)
         current_batch_size = len(batch_vids)
         maxlen = np.max(batch_lens)
-        batch_masks = np.zeros(current_batch_size, maxlen)
-        ipdb.set_trace()
+
+        frame_tensor = np.zeros((current_batch_size, maxlen, 2, 227, 227))
+        mask_matrix = np.zeros((current_batch_size, maxlen))
+        label_matrix = np.zeros((current_batch_size, dim_output))
+
+        for idx, frame in enumerate(batch_frames):
+            frame_tensor[idx][:len(frame)] = frame
+            mask_matrix[idx][:len(frame)] = 1
+            label_matrix[idx][batch_labels[idx]] = 1
+
+        cost = f_train(frame_tensor, mask_matrix, label_matrix)
+        print cost
 
 test_data = np.random.randn(10, 10, 2, 227, 227)
 
